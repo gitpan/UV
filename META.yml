@@ -20,9 +20,12 @@ meta-spec:
 name: UV
 no_index:
   directory:
+    - deps
     - example
     - inc
     - t
 requires:
   XSLoader: 0.02
-version: 0.12
+resources:
+  repository: git://github.com/typester/p5-UV.git
+version: 0.2
