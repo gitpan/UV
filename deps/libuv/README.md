@@ -46,6 +46,10 @@ http://nodejs.org/
    &mdash; API documentation in the form of detailed header comments.
  * [An Introduction to libuv](http://nikhilm.github.com/uvbook/) &mdash; An
    overview of libuv with tutorials.
+ * [LXJS 2012 talk](http://www.youtube.com/watch?v=nGn60vDSxQ4) - High-level
+   introductory talk about libuv.
+ * [Tests and benchmarks](https://github.com/joyent/libuv/tree/master/test) -
+   API specification and usage examples.
 
 ## Build Instructions
 

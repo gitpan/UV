@@ -28,4 +28,4 @@ requires:
   XSLoader: 0.02
 resources:
   repository: git://github.com/typester/p5-UV.git
-version: 0.2
+version: 0.21

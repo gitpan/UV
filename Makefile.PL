@@ -10,6 +10,7 @@ BEGIN {
     my @not_available;
 
     {
+        $|=1; # ref RT #115206
         local *STDOUT;
         eval qq{use inc::Module::Install; 1;} or push @not_available, 'inc::Module::Install';
     }
@@ -60,7 +61,8 @@ elsif ($^O eq 'sunos' || $^O eq 'solaris') {
     cc_libs 'm', 'socket', 'nsl', 'kstat', 'pthreads';
 }
 elsif ($^O eq 'MSWin32') {
-    cc_libs 'm', 'ws2_32';
+    cc_append_to_ccflags '-D_WIN32_WINNT=0x600'; # https://github.com/joyent/libuv/issues/263
+    cc_libs 'm', 'ws2_32', 'psapi', 'iphlpapi', 'kernel32';
 }
 else {
     die "$^O is unsupported at this point\n";
