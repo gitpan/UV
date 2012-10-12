@@ -22,4 +22,4 @@ no_index:
     - inc
 requires:
   XSLoader: 0.02
-version: 0.21
+version: 0.22

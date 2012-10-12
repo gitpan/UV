@@ -20,7 +20,7 @@
 
 E=
 CSTDFLAG=--std=c89 -pedantic -Wall -Wextra -Wno-unused-parameter
-CFLAGS += -g
+CFLAGS += -g -fPIC
 CPPFLAGS += -Isrc -Isrc/unix/ev
 LINKFLAGS=-lm
 
