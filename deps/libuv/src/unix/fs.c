@@ -46,7 +46,7 @@
 
 #define INIT(type)                                                            \
   do {                                                                        \
-    uv__req_init((loop), (req), UV_FS_ ## type);                              \
+    uv__req_init((loop), (req), UV_FS);                                       \
     (req)->fs_type = UV_FS_ ## type;                                          \
     (req)->errorno = 0;                                                       \
     (req)->result = 0;                                                        \
@@ -90,7 +90,7 @@
     }                                                                         \
     else {                                                                    \
       uv__fs_work(&(req)->work_req);                                          \
-      uv__fs_done(&(req)->work_req);                                          \
+      uv__fs_done(&(req)->work_req, 0);                                       \
       return (req)->result;                                                   \
     }                                                                         \
   }                                                                           \
@@ -98,10 +98,12 @@
 
 
 static ssize_t uv__fs_fdatasync(uv_fs_t* req) {
-#if defined(__APPLE__) && defined(F_FULLFSYNC)
+#if defined(__linux__) || defined(__sun) || defined(__NetBSD__)
+  return fdatasync(req->file);
+#elif defined(__APPLE__) && defined(F_FULLFSYNC)
   return fcntl(req->file, F_FULLFSYNC);
 #else
-  return fdatasync(req->file);
+  return fsync(req->file);
 #endif
 }
 
@@ -111,43 +113,71 @@ static ssize_t uv__fs_futime(uv_fs_t* req) {
   /* utimesat() has nanosecond resolution but we stick to microseconds
    * for the sake of consistency with other platforms.
    */
+  static int no_utimesat;
   struct timespec ts[2];
+  struct timeval tv[2];
+  char path[sizeof("/proc/self/fd/") + 3 * sizeof(int)];
+  int r;
+
+  if (no_utimesat)
+    goto skip;
+
   ts[0].tv_sec  = req->atime;
   ts[0].tv_nsec = (unsigned long)(req->atime * 1000000) % 1000000 * 1000;
   ts[1].tv_sec  = req->mtime;
   ts[1].tv_nsec = (unsigned long)(req->mtime * 1000000) % 1000000 * 1000;
-  return uv__utimesat(req->file, NULL, ts, 0);
-#elif HAVE_FUTIMES
+
+  r = uv__utimesat(req->file, NULL, ts, 0);
+  if (r == 0)
+    return r;
+
+  if (errno != ENOSYS)
+    return r;
+
+  no_utimesat = 1;
+
+skip:
+
+  tv[0].tv_sec  = req->atime;
+  tv[0].tv_usec = (unsigned long)(req->atime * 1000000) % 1000000;
+  tv[1].tv_sec  = req->mtime;
+  tv[1].tv_usec = (unsigned long)(req->mtime * 1000000) % 1000000;
+  snprintf(path, sizeof(path), "/proc/self/fd/%d", (int) req->file);
+
+  r = utimes(path, tv);
+  if (r == 0)
+    return r;
+
+  switch (errno) {
+  case ENOENT:
+    if (fcntl(req->file, F_GETFL) == -1 && errno == EBADF)
+      break;
+    /* Fall through. */
+
+  case EACCES:
+  case ENOTDIR:
+    errno = ENOSYS;
+    break;
+  }
+
+  return r;
+
+#elif defined(__APPLE__)                                                      \
+    || defined(__DragonFly__)                                                 \
+    || defined(__FreeBSD__)                                                   \
+    || defined(__sun)
   struct timeval tv[2];
   tv[0].tv_sec  = req->atime;
   tv[0].tv_usec = (unsigned long)(req->atime * 1000000) % 1000000;
   tv[1].tv_sec  = req->mtime;
   tv[1].tv_usec = (unsigned long)(req->mtime * 1000000) % 1000000;
   return futimes(req->file, tv);
-#else /* !HAVE_FUTIMES */
+#else
   errno = ENOSYS;
   return -1;
 #endif
 }
 
-
-static ssize_t uv__fs_pwrite(uv_fs_t* req) {
-#if defined(__APPLE__)
-  /* Serialize writes on OS X, concurrent pwrite() calls result in data loss.
-   * We can't use a per-file descriptor lock, the descriptor may be a dup().
-   */
-  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-  ssize_t r;
-
-  pthread_mutex_lock(&lock);
-  r = pwrite(req->file, req->buf, req->len, req->off);
-  pthread_mutex_unlock(&lock);
-
-  return r;
-#else
-  return pwrite(req->file, req->buf, req->len, req->off);
-#endif
-}
 
 static ssize_t uv__fs_read(uv_fs_t* req) {
   if (req->off < 0)
@@ -157,11 +187,7 @@ static ssize_t uv__fs_read(uv_fs_t* req) {
 }
 
 
-#if defined(__linux__) || defined(__sun)
 static int uv__fs_readdir_filter(const struct dirent* dent) {
-#else
-static int uv__fs_readdir_filter(struct dirent* dent) {
-#endif
   return strcmp(dent->d_name, ".") != 0 && strcmp(dent->d_name, "..") != 0;
 }
 
@@ -348,6 +374,7 @@ static ssize_t uv__fs_sendfile_emul(uv_fs_t* req) {
       while (n == -1 && errno == EINTR);
 
       if (n == -1 || (pfd.revents & ~POLLOUT) != 0) {
+        errno = EIO;
         nsent = -1;
         goto out;
       }
@@ -394,6 +421,7 @@ static ssize_t uv__fs_sendfile(uv_fs_t* req) {
         errno == EIO ||
         errno == ENOTSOCK ||
         errno == EXDEV) {
+      errno = 0;
       return uv__fs_sendfile_emul(req);
     }
 
@@ -425,6 +453,7 @@ static ssize_t uv__fs_sendfile(uv_fs_t* req) {
         errno == EIO ||
         errno == ENOTSOCK ||
         errno == EXDEV) {
+      errno = 0;
       return uv__fs_sendfile_emul(req);
     }
 
@@ -445,10 +474,27 @@ static ssize_t uv__fs_utime(uv_fs_t* req) {
 
 
 static ssize_t uv__fs_write(uv_fs_t* req) {
+  ssize_t r;
+
+  /* Serialize writes on OS X, concurrent write() and pwrite() calls result in
+   * data loss. We can't use a per-file descriptor lock, the descriptor may be
+   * a dup().
+   */
+#if defined(__APPLE__)
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  pthread_mutex_lock(&lock);
+#endif
+
   if (req->off < 0)
-    return write(req->file, req->buf, req->len);
+    r = write(req->file, req->buf, req->len);
   else
-    return uv__fs_pwrite(req);
+    r = pwrite(req->file, req->buf, req->len, req->off);
+
+#if defined(__APPLE__)
+  pthread_mutex_unlock(&lock);
+#endif
+
+  return r;
 }
 
 
@@ -512,7 +558,7 @@ static void uv__fs_work(struct uv__work* w) {
 }
 
 
-static void uv__fs_done(struct uv__work* w) {
+static void uv__fs_done(struct uv__work* w, int status) {
   uv_fs_t* req;
 
   req = container_of(w, uv_fs_t, work_req);
@@ -521,6 +567,12 @@ static void uv__fs_done(struct uv__work* w) {
   if (req->errorno != 0) {
     req->errorno = uv_translate_sys_error(req->errorno);
     uv__set_artificial_error(req->loop, req->errorno);
+  }
+
+  if (status == -UV_ECANCELED) {
+    assert(req->errorno == 0);
+    req->errorno = UV_ECANCELED;
+    uv__set_artificial_error(req->loop, UV_ECANCELED);
   }
 
   if (req->cb != NULL)
